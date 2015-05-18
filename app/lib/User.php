@@ -2,57 +2,92 @@
 
 namespace Lib;
 
-class User {
+use Phalcon\Validation\Validator;
 
-	protected $username = '',
-			  $is_authenticated = false,
+class User extends \Phalcon\Di\Injectable {
+
+	protected $is_authenticated = false,
 			  $role = '',
-			  $session = array();
+			  $session = null,
+			  $data = null;
 
 	const ROLE_GUEST = 'Guest';
 	const ROLE_ACCOUNT = 'Account';
 	const ROLE_DEFAULT = 'Guest';
 
-	public function __construct($session) 
-	{	
+	public function __construct(\Phalcon\Session\AdapterInterface $session) 
+	{
 		$this->session = $session;
+		$this->setRole(self::ROLE_DEFAULT);
 
-		$this->authenticate();
+		$username = "";
+		$email = "";
+		$password = "";
+
+		if ( ( $this->cookies->has('username') || $this->cookies->has('email') ) && $this->cookies->has('password') ) {
+
+			$username = $this->cookies->get('username');
+			$username = $username->getValue();
+			$email = $this->cookies->get('email');
+			$email = $email->getValue();
+			$password = $this->cookies->get('password');
+			$password = $this->crypt->decrypt($password->getValue());
+		}
+
+		$this->authenticate($username, $email, $password);
 	}
 
 	public function authenticate( $username = "" , $email = "", $password = "" )
 	{
-		if ( !empty($this->session->get('user')) ) {
+		$auth_params = ($username != "" || $email != "") && $password != "";
 
-			$session_user = $this->session->get('user');
-
-			$this->setRole($session_user['role']);
-			$this->username = $session_user['username'];
-			$this->is_authenticated = $session_user['is_authenticated'];
-
-			return true;
+		if ( !$this->session->has('user') && !$auth_params ) {
+			return false;
 		}
-		else if ( ($username != "" || $email != "") && $password != "" ) {
+
+		if ( $this->session->has('user') ) {
+
+			$account = \CbkUserAccount::findFirst(array(
+				'id = ?0',
+				'bind' => array($this->session->get('user')['account_id'])
+			));
+		} else if ( $auth_params ) {
 
 			$account = \CbkUserAccount::findFirst(
 				array(
-					'username = ?0 OR email = ?0',
+					'username = ?0 OR email = ?1',
 					'bind' => array($username, $email)
 				)
 			);
 
-			if ( $account ) {
-
-				if ( $this->security->checkHash($password, $account->password) ) {
-
-					$this->setRole($account->CbkUserRole->name);
-					$this->username = $account->username;
-					$this->is_authenticated = true;
-				}
-				return true;
-			}
+			if ( $account && ! $this->security->checkHash($password, $account->password) )
+				$account = null;
 		}
-		 
+
+		if ( $account ) {
+
+			$this->setRole($account->CbkUserRole ? $account->CbkUserRole->name : self::ROLE_GUEST);
+			$this->is_authenticated = true;
+
+			$this->session->set('user', array(
+				'account_id' => $account->id
+			));
+
+			$this->data = array(
+				'account_id' => $account->id,
+				'username' => $account->username,
+				'email' => $account->email,
+				'firstname' => $account->firstname,
+				'lastname' => $account->lastname,
+				'gender' => $account->gender,
+				'phone' => $account->phone,
+				'address' => $account->address,
+				'created_at' => $account->created_at,
+				'modified_at' => $account->modified_at
+			);
+
+			return true;
+		}
 		$this->unauthenticate();
 
 		return false;
@@ -61,18 +96,26 @@ class User {
 	public function unauthenticate()
 	{
 		$this->setRole(self::ROLE_DEFAULT);
-		$this->username = "";
-		$this->is_authenticated = false;	
+		$this->is_authenticated = false;
+
+		
+		$this->data = null;
+
+		setcookie('username', '', -time(), $this->config->application->baseUri);
+		setcookie('email', '', -time(), $this->config->application->baseUri);
+		setcookie('password', '', -time(), $this->config->application->baseUri);
+
+		$this->session->destroy();
 	}
 
 	public function isAuthenticated()
 	{
-		return $is_authenticated;
+		return $this->is_authenticated;
 	}
 
-	public function getUsername()
+	public function getInfo($prop)
 	{
-
+		return $this->data[$prop];
 	}
 
 	private function setRole($role)
